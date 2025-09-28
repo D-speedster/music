@@ -193,32 +193,43 @@ MP3, FLAC, WAV, M4A, OGG, AAC
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle inline keyboard callbacks"""
         query = update.callback_query
-        await query.answer()
         
         user_id = update.effective_user.id
         if user_id not in self.user_sessions:
+            await query.answer()
             await query.edit_message_text("❌ جلسه منقضی شده. فایل جدید ارسال کنید.")
             return
         
+        # Handle different callback types
         if query.data == "edit_tags":
+            await query.answer()
             await self.show_tag_menu(update, context)
         elif query.data == "manage_cover":
+            await query.answer()
             await self.show_cover_menu(update, context)
         elif query.data == "convert_format":
+            await query.answer()
             await self.show_format_menu(update, context)
         elif query.data == "set_filename":
+            await query.answer()
             await self.show_filename_menu(update, context)
         elif query.data == "save_download":
+            await query.answer()
             await self.save_and_download(update, context)
         elif query.data == "delete_file":
+            await query.answer()
             await self.delete_user_file(update, context)
         elif query.data == "back_main":
+            await query.answer()
             await self.show_main_menu(update, context)
         elif query.data.startswith("edit_"):
+            await query.answer()
             await self.handle_tag_edit(update, context)
         elif query.data.startswith("cover_"):
+            await query.answer()
             await self.handle_cover_action(update, context)
         elif query.data.startswith("format_"):
+            # Don't answer immediately for format conversion - it's handled in the method
             await self.handle_format_conversion(update, context)
     
     async def show_tag_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -361,7 +372,8 @@ MP3, FLAC, WAV, M4A, OGG, AAC
         elif action == "remove":
             success = self.audio_processor.remove_cover_art(session['file_path'])
             if success:
-                session['metadata']['has_cover'] = False
+                # Refresh metadata after removing cover
+                session['metadata'] = self.audio_processor.get_metadata(session['file_path'])
                 await query.edit_message_text("✅ کاور حذف شد")
             else:
                 await query.edit_message_text("❌ خطا در حذف کاور")
@@ -395,7 +407,8 @@ MP3, FLAC, WAV, M4A, OGG, AAC
                 )
                 
                 if success:
-                    session['metadata']['has_cover'] = True
+                    # Refresh metadata after adding cover to ensure has_cover is updated
+                    session['metadata'] = self.audio_processor.get_metadata(session['file_path'])
                     await update.message.reply_text("✅ کاور با موفقیت اضافه شد!")
                 else:
                     await update.message.reply_text("❌ خطا در اضافه کردن کاور")
@@ -405,6 +418,7 @@ MP3, FLAC, WAV, M4A, OGG, AAC
                 
             except Exception as e:
                 await update.message.reply_text(f"❌ خطا در پردازش تصویر: {str(e)}")
+                print(f"Cover art error: {e}")  # Log for debugging
     
     async def handle_format_conversion(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle format conversion"""
@@ -412,6 +426,9 @@ MP3, FLAC, WAV, M4A, OGG, AAC
         target_format = query.data.replace("format_", "")
         user_id = update.effective_user.id
         session = self.user_sessions[user_id]
+        
+        # Answer the callback query first to prevent timeout
+        await query.answer()
         
         status_msg = await query.edit_message_text("⏳ در حال تبدیل فرمت...")
         
@@ -427,17 +444,44 @@ MP3, FLAC, WAV, M4A, OGG, AAC
                 target_format
             )
             
-            if success:
+            if success and os.path.exists(output_path):
                 # Update session
                 session['file_path'] = output_path
                 session['metadata']['format'] = f".{target_format}"
                 
                 await status_msg.edit_text(f"✅ فایل به فرمت {target_format.upper()} تبدیل شد!")
+                
+                # Send the converted file to user
+                with open(output_path, 'rb') as audio_file:
+                    # Extract cover art for thumbnail if available
+                    cover_data = None
+                    if session['metadata'].get('has_cover', False):
+                        cover_data = self.audio_processor.extract_cover_art(output_path)
+                    
+                    if cover_data:
+                        await context.bot.send_audio(
+                            chat_id=user_id,
+                            audio=audio_file,
+                            thumbnail=cover_data,
+                            filename=f"{base_name}.{target_format}",
+                            caption=f"🎵 فایل تبدیل شده به فرمت {target_format.upper()}"
+                        )
+                    else:
+                        await context.bot.send_audio(
+                            chat_id=user_id,
+                            audio=audio_file,
+                            filename=f"{base_name}.{target_format}",
+                            caption=f"🎵 فایل تبدیل شده به فرمت {target_format.upper()}"
+                        )
+                
+                # Show main menu again
+                await self.show_main_menu(update, context)
             else:
                 await status_msg.edit_text("❌ خطا در تبدیل فرمت")
                 
         except Exception as e:
             await status_msg.edit_text(f"❌ خطا در تبدیل: {str(e)}")
+            print(f"Format conversion error: {e}")  # Log for debugging
     
     async def save_and_download(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Save and send the edited file"""
@@ -461,19 +505,34 @@ MP3, FLAC, WAV, M4A, OGG, AAC
             
             final_filename = f"{base_filename}{extension}"
             
-            # Send file
+            # Extract cover art for thumbnail if available
+            cover_data = None
+            if session['metadata'].get('has_cover', False):
+                cover_data = self.audio_processor.extract_cover_art(session['file_path'])
+            
+            # Send file with cover as thumbnail if available
             with open(session['file_path'], 'rb') as audio_file:
-                await context.bot.send_audio(
-                    chat_id=update.effective_chat.id,
-                    audio=audio_file,
-                    filename=final_filename,
-                    caption="✅ فایل ویرایش شده آماده است!"
-                )
+                if cover_data:
+                    await context.bot.send_audio(
+                        chat_id=update.effective_chat.id,
+                        audio=audio_file,
+                        thumbnail=cover_data,
+                        filename=final_filename,
+                        caption="✅ فایل ویرایش شده آماده است!"
+                    )
+                else:
+                    await context.bot.send_audio(
+                        chat_id=update.effective_chat.id,
+                        audio=audio_file,
+                        filename=final_filename,
+                        caption="✅ فایل ویرایش شده آماده است!"
+                    )
             
             await status_msg.edit_text("✅ فایل با موفقیت ارسال شد!")
             
         except Exception as e:
             await status_msg.edit_text(f"❌ خطا در ارسال فایل: {str(e)}")
+            print(f"Save and download error: {e}")  # Log for debugging
     
     async def delete_user_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Delete user's file and session"""
@@ -655,6 +714,25 @@ MP3, FLAC, WAV, M4A, OGG, AAC
         
         await update.message.reply_text(help_text)
     
+    async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle errors that occur during bot operation"""
+        import traceback
+        
+        # Log the error
+        print(f"❌ خطای ربات: {context.error}")
+        print(f"Update: {update}")
+        traceback.print_exception(type(context.error), context.error, context.error.__traceback__)
+        
+        # Try to send error message to user if possible
+        try:
+            if update and hasattr(update, 'effective_chat') and update.effective_chat:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="❌ خطایی در ربات رخ داده است. لطفاً دوباره تلاش کنید."
+                )
+        except Exception as e:
+            print(f"Could not send error message to user: {e}")
+    
     def run(self):
         """Run the bot"""
         if not Config.BOT_TOKEN:
@@ -663,6 +741,9 @@ MP3, FLAC, WAV, M4A, OGG, AAC
         
         # Create application
         application = Application.builder().token(Config.BOT_TOKEN).build()
+        
+        # Add error handler
+        application.add_error_handler(self.error_handler)
         
         # Add handlers
         application.add_handler(CommandHandler("start", self.start))

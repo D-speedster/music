@@ -40,8 +40,9 @@ class AdminPanel:
         self.init_database()
         
         # Default limits
+        from config import Config
         self.default_limits = {
-            'max_file_size': 50 * 1024 * 1024,  # 50MB
+            'max_file_size': Config.MAX_FILE_SIZE_BYTES,  # Use config value
             'daily_file_limit': 20,
             'max_batch_size': 10,
             'banned_users': set()
