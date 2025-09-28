@@ -1,0 +1,403 @@
+# 🔒 Telegram Music Bot - Git Ignore
+
+# ========================
+# 🔐 Environment & Secrets
+# ========================
+.env
+.env.local
+.env.production
+.env.staging
+*.key
+*.pem
+config.ini
+secrets.json
+
+# ========================
+# 🐍 Python
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ========================
+# 🌐 Virtual Environment
+# ========================
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+pyvenv.cfg
+
+# ========================
+# 📁 Temporary & Cache
+# ========================
+temp/
+tmp/
+cache/
+.cache/
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# ========================
+# 🎵 Audio Files
+# ========================
+output/
+downloads/
+processed/
+*.mp3
+*.flac
+*.wav
+*.m4a
+*.ogg
+*.aac
+*.wma
+*.opus
+
+# ========================
+# 🖼️ Image Files
+# ========================
+covers/
+thumbnails/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.webp
+*.ico
+
+# ========================
+# 📊 Database & Logs
+# ========================
+*.db
+*.sqlite
+*.sqlite3
+*.log
+logs/
+*.log.*
+log_*.txt
+
+# ========================
+# 🔧 IDE & Editors
+# ========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# ========================
+# 📦 Package Managers
+# ========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# ========================
+# 🧪 Testing
+# ========================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# ========================
+# 📚 Documentation
+# ========================
+docs/_build/
+site/
+.mkdocs/
+
+# ========================
+# 🐳 Docker
+# ========================
+Dockerfile.local
+docker-compose.override.yml
+.dockerignore
+
+# ========================
+# ☁️ Cloud & Deployment
+# ========================
+.vercel
+.netlify
+.railway
+.heroku
+
+# ========================
+# 🔄 Version Control
+# ========================
+.git/
+*.orig
+*.rej
+
+# ========================
+# 💾 Backup Files
+# ========================
+*.bak
+*.backup
+*.old
+*~
+.#*
+#*#
+
+# ========================
+# 🖥️ System Files
+# ========================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ========================
+# 📱 Mobile Development
+# ========================
+*.apk
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# ========================
+# 🔧 Build Tools
+# ========================
+.gradle/
+build/
+target/
+out/
+bin/
+obj/
+
+# ========================
+# 📈 Analytics & Monitoring
+# ========================
+.nyc_output
+coverage/
+*.lcov
+
+# ========================
+# 🌍 Internationalization
+# ========================
+*.mo
+*.pot
+
+# ========================
+# 🎯 Project Specific
+# ========================
+# Bot specific temporary files
+bot_temp/
+user_sessions/
+processing_queue/
+error_reports/
+
+# FFmpeg binaries (if included)
+ffmpeg/
+ffprobe/
+ffplay/
+
+# User uploaded content
+uploads/
+user_files/
+
+# Statistics and analytics
+stats/
+analytics/
+reports/
+
+# Custom configurations
+custom_config/
+user_configs/
+
+# ========================
+# 🚫 Security Exclusions
+# ========================
+# Never commit these patterns
+*password*
+*secret*
+*token*
+*api_key*
+*private_key*
+*credential*
+auth.json
+keys.json
+
+# ========================
+# 📝 Notes & Documentation
+# ========================
+TODO.md
+NOTES.md
+PRIVATE.md
+INTERNAL.md
+
+# ========================
+# 🔍 Search & Index
+# ========================
+.vscode/settings.json
+.idea/workspace.xml
+*.code-workspace
+
+# ========================
+# 🎨 Assets (Optional)
+# ========================
+# Uncomment if you want to ignore all assets
+# assets/
+# static/
+# media/
+
+# ========================
+# 📊 Performance & Profiling
+# ========================
+*.prof
+*.pstats
+.benchmarks/
+
+# ========================
+# 🔄 Continuous Integration
+# ========================
+.github/workflows/local.yml
+.gitlab-ci.local.yml
+.travis.yml.local
+
+# ========================
+# 📦 Distribution
+# ========================
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# ========================
+# 🧹 Cleanup Scripts
+# ========================
+cleanup.sh
+reset.sh
+purge.sh
+
+# ========================
+# 🎵 Audio Processing
+# ========================
+# Temporary audio processing files
+*.processing
+*.converting
+*.temp.mp3
+*.temp.flac
+
+# Metadata extraction cache
+.metadata_cache/
+.tag_cache/
+
+# Cover art cache
+.cover_cache/
+.thumbnail_cache/
+
+# ========================
+# 📱 Telegram Bot Specific
+# ========================
+# Bot session files
+*.session
+bot.session
+
+# Webhook certificates
+webhook_cert.pem
+webhook_key.pem
+
+# Bot logs
+bot.log
+telegram.log
+error.log
+
+# User data (GDPR compliance)
+user_data/
+personal_data/
+
+# ========================
+# 🔧 Development Tools
+# ========================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# ========================
+# 🎯 Custom Patterns
+# ========================
+# Add your custom ignore patterns here
+# example_custom_file.txt
+# custom_directory/
+
+# End of .gitignore
