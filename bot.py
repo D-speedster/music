@@ -1,4 +1,5 @@
 import os
+import io
 import asyncio
 import time
 import tempfile
@@ -7,6 +8,8 @@ from typing import Dict, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from telegram.constants import ParseMode
+from telegram.request import HTTPXRequest
+from telegram.error import TimedOut, NetworkError, TelegramError
 import aiofiles
 from config import Config
 from utils.audio_processor import AudioProcessor
@@ -174,6 +177,10 @@ MP3, FLAC, WAV, M4A, OGG, AAC
             [InlineKeyboardButton("💾 ذخیره و دانلود", callback_data="save_download")],
             [InlineKeyboardButton("🗑️ حذف فایل", callback_data="delete_file")]
         ]
+
+        # If a previous send failed, offer quick retry without redoing steps
+        if context.user_data.get('pending_send'):
+            keyboard.append([InlineKeyboardButton("🔁 ارسال مجدد", callback_data="retry_send")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -222,6 +229,9 @@ MP3, FLAC, WAV, M4A, OGG, AAC
         elif query.data == "back_main":
             await query.answer()
             await self.show_main_menu(update, context)
+        elif query.data == "retry_send":
+            await query.answer()
+            await self.retry_send(update, context)
         elif query.data.startswith("edit_"):
             await query.answer()
             await self.handle_tag_edit(update, context)
@@ -263,6 +273,7 @@ MP3, FLAC, WAV, M4A, OGG, AAC
         
         keyboard.extend([
             [InlineKeyboardButton("➕ اضافه کردن کاور", callback_data="cover_add")],
+            [InlineKeyboardButton("🎨 کاور موج‌نما", callback_data="cover_waveform")],
             [InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")]
         ])
         
@@ -381,6 +392,19 @@ MP3, FLAC, WAV, M4A, OGG, AAC
         elif action == "add":
             context.user_data['adding_cover'] = True
             await query.edit_message_text("🖼️ تصویر کاور جدید را ارسال کنید:")
+
+        elif action == "waveform":
+            # Generate a waveform-based cover and set it
+            cover_bytes = self.audio_processor.generate_waveform_cover(session['file_path'])
+            if cover_bytes:
+                success = self.audio_processor.add_cover_art(session['file_path'], cover_bytes, 'image/jpeg')
+                if success:
+                    session['metadata'] = self.audio_processor.get_metadata(session['file_path'])
+                    await query.edit_message_text("✅ کاور موج‌نما به فایل اضافه شد")
+                else:
+                    await query.edit_message_text("❌ خطا در افزودن کاور موج‌نما")
+            else:
+                await query.edit_message_text("❌ ایجاد کاور موج‌نما ممکن نشد")
     
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle photo uploads for cover art"""
@@ -453,26 +477,24 @@ MP3, FLAC, WAV, M4A, OGG, AAC
                 
                 # Send the converted file to user
                 with open(output_path, 'rb') as audio_file:
-                    # Extract cover art for thumbnail if available
-                    cover_data = None
+                    # Extract and prepare cover art for thumbnail if available
+                    thumbnail_file = None
                     if session['metadata'].get('has_cover', False):
                         cover_data = self.audio_processor.extract_cover_art(output_path)
+                        if cover_data:
+                            prepared = self.audio_processor.prepare_thumbnail(cover_data)
+                            if prepared:
+                                thumbnail_file = InputFile(io.BytesIO(prepared), filename='thumb.jpg')
                     
-                    if cover_data:
-                        await context.bot.send_audio(
-                            chat_id=user_id,
-                            audio=audio_file,
-                            thumbnail=cover_data,
-                            filename=f"{base_name}.{target_format}",
-                            caption=f"🎵 فایل تبدیل شده به فرمت {target_format.upper()}"
-                        )
-                    else:
-                        await context.bot.send_audio(
-                            chat_id=user_id,
-                            audio=audio_file,
-                            filename=f"{base_name}.{target_format}",
-                            caption=f"🎵 فایل تبدیل شده به فرمت {target_format.upper()}"
-                        )
+                    # Send with retry to avoid transient timeouts
+                    await self._send_audio_with_retry(
+                        context,
+                        chat_id=user_id,
+                        audio_fp=audio_file,
+                        filename=f"{base_name}.{target_format}",
+                        caption=f"🎵 فایل تبدیل شده به فرمت {target_format.upper()}",
+                        thumbnail=thumbnail_file
+                    )
                 
                 # Show main menu again
                 await self.show_main_menu(update, context)
@@ -512,27 +534,37 @@ MP3, FLAC, WAV, M4A, OGG, AAC
             
             # Send file with cover as thumbnail if available
             with open(session['file_path'], 'rb') as audio_file:
+                # Prepare thumbnail safely (Telegram limit: <= 200KB, <= 320x320)
+                thumbnail_file = None
                 if cover_data:
-                    await context.bot.send_audio(
-                        chat_id=update.effective_chat.id,
-                        audio=audio_file,
-                        thumbnail=cover_data,
-                        filename=final_filename,
-                        caption="✅ فایل ویرایش شده آماده است!"
-                    )
-                else:
-                    await context.bot.send_audio(
-                        chat_id=update.effective_chat.id,
-                        audio=audio_file,
-                        filename=final_filename,
-                        caption="✅ فایل ویرایش شده آماده است!"
-                    )
+                    prepared = self.audio_processor.prepare_thumbnail(cover_data)
+                    if prepared:
+                        thumbnail_file = InputFile(io.BytesIO(prepared), filename='thumb.jpg')
+
+                # Send with retry
+                await self._send_audio_with_retry(
+                    context,
+                    chat_id=update.effective_chat.id,
+                    audio_fp=audio_file,
+                    filename=final_filename,
+                    caption="✅ فایل ویرایش شده آماده است!",
+                    thumbnail=thumbnail_file
+                )
             
             await status_msg.edit_text("✅ فایل با موفقیت ارسال شد!")
             
         except Exception as e:
             await status_msg.edit_text(f"❌ خطا در ارسال فایل: {str(e)}")
             print(f"Save and download error: {e}")  # Log for debugging
+            # Store pending send so user can retry without repeating steps
+            context.user_data['pending_send'] = {
+                'file_path': session['file_path'],
+                'filename': final_filename,
+                'caption': "✅ فایل ویرایش شده آماده است!"
+            }
+            # Offer quick retry button
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔁 ارسال مجدد", callback_data="retry_send")]])
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="ارسال ناموفق بود. می‌توانید دوباره تلاش کنید.", reply_markup=keyboard)
     
     async def delete_user_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Delete user's file and session"""
@@ -552,6 +584,47 @@ MP3, FLAC, WAV, M4A, OGG, AAC
             del self.user_sessions[user_id]
             
             await update.callback_query.edit_message_text("🗑️ فایل حذف شد. فایل جدید ارسال کنید.")
+
+    async def retry_send(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Retry the last pending send without redoing steps"""
+        data = context.user_data.get('pending_send')
+        if not data:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="درخواستی برای ارسال مجدد یافت نشد.")
+            return
+        try:
+            with open(data['file_path'], 'rb') as audio_file:
+                # Try to prepare thumbnail again if available in file metadata
+                session = self.user_sessions[update.effective_user.id]
+                cover_data = None
+                if session['metadata'].get('has_cover', False):
+                    cover_data = self.audio_processor.extract_cover_art(session['file_path'])
+                thumbnail_file = None
+                if cover_data:
+                    prepared = self.audio_processor.prepare_thumbnail(cover_data)
+                    if prepared:
+                        thumbnail_file = InputFile(io.BytesIO(prepared), filename='thumb.jpg')
+
+                await self._send_audio_with_retry(
+                    context,
+                    chat_id=update.effective_chat.id,
+                    audio_fp=audio_file,
+                    filename=data['filename'],
+                    caption=data['caption'],
+                    thumbnail=thumbnail_file
+                )
+            # Clear pending after success
+            context.user_data.pop('pending_send', None)
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ ارسال موفق بود.")
+        except Exception as e:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ ارسال مجدد ناموفق: {e}")
+
+    async def retry_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/retry command handler to retry last send"""
+        await self.retry_send(update, context)
+
+    async def resume_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/resume command handler to return to current session"""
+        await self.show_main_menu(update, context)
     
     async def batch_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /batch command for batch processing"""
@@ -739,8 +812,9 @@ MP3, FLAC, WAV, M4A, OGG, AAC
             print("❌ BOT_TOKEN تنظیم نشده است!")
             return
         
-        # Create application
-        application = Application.builder().token(Config.BOT_TOKEN).build()
+        # Create application with extended timeouts for large uploads
+        request = HTTPXRequest(connect_timeout=30, read_timeout=300, write_timeout=300)
+        application = Application.builder().token(Config.BOT_TOKEN).request(request).build()
         
         # Add error handler
         application.add_error_handler(self.error_handler)
@@ -751,6 +825,8 @@ MP3, FLAC, WAV, M4A, OGG, AAC
         application.add_handler(CommandHandler("stats", self.stats_command))
         application.add_handler(CommandHandler("admin", self.admin_command))
         application.add_handler(CommandHandler("help", self.help_command))
+        application.add_handler(CommandHandler("retry", self.retry_command))
+        application.add_handler(CommandHandler("resume", self.resume_command))
         application.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, self.handle_audio))
         application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_input))
@@ -758,6 +834,33 @@ MP3, FLAC, WAV, M4A, OGG, AAC
         
         print("🎵 ربات موزیک راه‌اندازی شد!")
         application.run_polling()
+
+    async def _send_audio_with_retry(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, audio_fp, filename: str, caption: str, thumbnail: Optional[InputFile], max_retries: int = 3):
+        """Send audio with exponential backoff retry on network timeouts."""
+        attempt = 0
+        while True:
+            try:
+                # Reset file pointer before each attempt
+                try:
+                    audio_fp.seek(0)
+                except Exception:
+                    pass
+                await context.bot.send_audio(
+                    chat_id=chat_id,
+                    audio=audio_fp,
+                    thumbnail=thumbnail,
+                    filename=filename,
+                    caption=caption
+                )
+                return
+            except (TimedOut, NetworkError) as e:
+                attempt += 1
+                if attempt > max_retries:
+                    raise e
+                await asyncio.sleep(min(2 ** attempt, 10))
+            except TelegramError as e:
+                # Non-timeout telegram errors shouldn't be retried blindly
+                raise e
 
 if __name__ == "__main__":
     bot = MusicBot()

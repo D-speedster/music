@@ -270,6 +270,137 @@ class AudioProcessor:
         except Exception as e:
             print(f"Error extracting cover art: {e}")
             return None
+
+    def prepare_thumbnail(self, cover_data: bytes, max_size: Tuple[int, int] = (320, 320), max_bytes: int = 200 * 1024) -> Optional[bytes]:
+        """Prepare a JPEG thumbnail within Telegram limits.
+
+        - Resizes to <= 320x320
+        - Compresses to <= 200KB
+        Returns bytes of JPEG or None if processing fails.
+        """
+        try:
+            if not PIL_AVAILABLE or Image is None:
+                # Fallback: return original; sending may still work without resizing
+                return cover_data
+            
+            with Image.open(io.BytesIO(cover_data)) as img:
+                # Ensure RGB JPEG
+                if img.mode not in ("RGB", "L"):
+                    img = img.convert("RGB")
+                
+                # Resize keeping aspect ratio
+                img.thumbnail(max_size)
+                
+                # Try compressing at decreasing quality until under size
+                for quality in (85, 75, 65, 60):
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=quality, optimize=True)
+                    data = buf.getvalue()
+                    if len(data) <= max_bytes:
+                        return data
+                
+                # If still too large, return the smallest attempt
+                return data
+        
+        except Exception as e:
+            print(f"Error preparing thumbnail: {e}")
+            return None
+
+    def generate_waveform_cover(
+        self,
+        file_path: str,
+        width: int = 320,
+        height: int = 320,
+        background: Tuple[int, int, int] = (18, 18, 20),
+        line_color: Tuple[int, int, int] = (0, 200, 255),
+        grid_color: Tuple[int, int, int] = (60, 60, 64),
+    ) -> Optional[bytes]:
+        """Generate a waveform image cover from the audio signal.
+
+        Returns JPEG bytes (<=320x320, ~<=200KB) or None on failure.
+        """
+        try:
+            # Ensure Pillow availability
+            if not PIL_AVAILABLE or Image is None:
+                print("Waveform cover requires Pillow; returning None")
+                return None
+
+            # If pydub is not available, build a lightweight placeholder using PIL
+            if not PYDUB_AVAILABLE or AudioSegment is None:
+                from PIL import ImageDraw
+                img = Image.new("RGB", (width, height), background)
+                draw = ImageDraw.Draw(img)
+                mid = height // 2
+                # Simple placeholder bars
+                bar_width = max(1, width // 64)
+                for i in range(0, width, bar_width * 2):
+                    draw.rectangle((i, mid - 12, i + bar_width, mid + 12), fill=line_color)
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=75, optimize=True)
+                data = buf.getvalue()
+                safe = self.prepare_thumbnail(data)
+                return safe or data
+
+            # Load audio and extract mono samples
+            audio = AudioSegment.from_file(file_path)
+            mono = audio.set_channels(1)
+            samples = mono.get_array_of_samples()
+            total = len(samples)
+            if total == 0:
+                raise ValueError("Empty audio samples")
+
+            peak = max(1, max(abs(int(s)) for s in samples))
+
+            # Create image canvas
+            img = Image.new("RGB", (width, height), background)
+            from PIL import ImageDraw
+            draw = ImageDraw.Draw(img)
+
+            # Optional horizontal grid lines for style
+            try:
+                step = 40
+                for y in range(0, height, step):
+                    draw.line((0, y, width, y), fill=grid_color)
+            except Exception:
+                pass
+
+            mid = height // 2
+            chunk = max(1, total // width)
+
+            # Draw vertical waveform bars across width
+            for x in range(width):
+                start = x * chunk
+                end = min((x + 1) * chunk, total)
+                segment = samples[start:end]
+                amp = 0 if not segment else max(abs(int(s)) for s in segment) / peak
+                y = max(1, int(amp * (height // 2 - 4)))
+                draw.line((x, mid - y, x, mid + y), fill=line_color)
+
+            # Compress and return within Telegram limits
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85, optimize=True)
+            data = buf.getvalue()
+            safe = self.prepare_thumbnail(data)
+            return safe or data
+
+        except Exception as e:
+            print(f"Error generating waveform cover: {e}")
+            # Graceful fallback: minimal placeholder
+            try:
+                if PIL_AVAILABLE and Image is not None:
+                    from PIL import ImageDraw
+                    img = Image.new("RGB", (width, height), background)
+                    draw = ImageDraw.Draw(img)
+                    mid = height // 2
+                    draw.line((0, mid, width, mid), fill=line_color)
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=70, optimize=True)
+                    data = buf.getvalue()
+                    safe = self.prepare_thumbnail(data)
+                    return safe or data
+            except Exception:
+                pass
+            return None
     
     def convert_format(self, input_path: str, output_path: str, target_format: str, bitrate: Optional[int] = None) -> bool:
         """Convert audio file to different format"""
