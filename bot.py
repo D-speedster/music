@@ -11,10 +11,14 @@ from telegram.constants import ParseMode
 from telegram.request import HTTPXRequest
 from telegram.error import TimedOut, NetworkError, TelegramError
 import aiofiles
+import aiohttp
+from telethon import TelegramClient
 from config import Config
 from utils.audio_processor import AudioProcessor
 from utils.batch_processor import BatchProcessor
 from utils.admin_panel import AdminPanel
+from utils.uploader import upload_file_async
+from utils.logger import logger
 
 class MusicBot:
     def __init__(self):
@@ -23,7 +27,25 @@ class MusicBot:
         self.admin_panel = AdminPanel()
         self.user_sessions: Dict[int, Dict] = {}
         self.batch_sessions = {}  # For batch processing sessions
+        self.telethon_client = None  # Will be initialized when needed
         Config.ensure_directories()
+    
+    async def _init_telethon_client(self):
+        """Initialize Telethon client for large file downloads"""
+        if self.telethon_client is None:
+            try:
+                logger.info("راه‌اندازی Telethon client برای فایل‌های بزرگ")
+                self.telethon_client = TelegramClient(
+                    'bot_session', 
+                    Config.TELEGRAM_API_ID, 
+                    Config.TELEGRAM_API_HASH
+                )
+                await self.telethon_client.start(bot_token=Config.BOT_TOKEN)
+                logger.info("Telethon client با موفقیت راه‌اندازی شد")
+            except Exception as e:
+                logger.error("خطا در راه‌اندازی Telethon client", error=str(e))
+                raise e
+        return self.telethon_client
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start command handler"""
@@ -65,33 +87,49 @@ MP3, FLAC, WAV, M4A, OGG, AAC
         )
     
     async def handle_audio(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle audio file uploads"""
+        """Handle audio file uploads with comprehensive logging"""
         user_id = update.effective_user.id
         
-        # Check file size
+        logger.info("شروع پردازش فایل صوتی", user_id=user_id)
+        
+        # Check file type
         if update.message.audio:
             file_obj = update.message.audio
+            file_type = "audio"
+            logger.debug("نوع فایل: audio", user_id=user_id)
         elif update.message.document:
             file_obj = update.message.document
+            file_type = "document"
+            logger.debug("نوع فایل: document", user_id=user_id)
         else:
+            logger.warning("فایل نامعتبر ارسال شده", user_id=user_id)
             await update.message.reply_text("❌ لطفاً یک فایل صوتی ارسال کنید.")
             return
         
-        # Check user limits
-        limits_check = self.admin_panel.check_user_limits(user_id, file_obj.file_size)
-        if not limits_check['allowed']:
-            await update.message.reply_text(f"❌ {limits_check['reason']}")
-            return
+        # Log file details
+        logger.log_file_processing_start(
+            user_id=user_id,
+            file_name=file_obj.file_name or "unknown",
+            file_size=file_obj.file_size,
+            file_type=file_type
+        )
         
-        if file_obj.file_size > Config.MAX_FILE_SIZE_BYTES:
-            await update.message.reply_text(
-                f"❌ حجم فایل بیش از حد مجاز است. حداکثر: {Config.MAX_FILE_SIZE_MB}MB"
-            )
+        # Check user limits
+        logger.debug("بررسی محدودیت‌های کاربر", user_id=user_id)
+        limits_check = self.admin_panel.check_user_limits(user_id, file_obj.file_size)
+        logger.log_user_limit_check(user_id, limits_check['allowed'], limits_check.get('reason'))
+        
+        if not limits_check['allowed']:
+            logger.warning("کاربر محدود شده", user_id=user_id, reason=limits_check['reason'])
+            await update.message.reply_text(f"❌ {limits_check['reason']}")
             return
         
         # Check file format
         file_extension = os.path.splitext(file_obj.file_name or '')[1].lower()
+        logger.debug("بررسی فرمت فایل", file_extension=file_extension)
+        
         if file_extension not in Config.SUPPORTED_AUDIO_FORMATS:
+            logger.warning("فرمت فایل پشتیبانی نمی‌شود", file_extension=file_extension)
             await update.message.reply_text(
                 f"❌ فرمت فایل پشتیبانی نمی‌شود.\n"
                 f"فرمت‌های مجاز: {', '.join(Config.SUPPORTED_AUDIO_FORMATS)}"
@@ -104,12 +142,99 @@ MP3, FLAC, WAV, M4A, OGG, AAC
         try:
             start_time = time.time()
             
+            # Check if file is too large for direct download (Telegram Bot API limit ~20MB)
+            if file_obj.file_size > Config.TELEGRAM_UPLOAD_LIMIT_BYTES:
+                logger.log_delivery_method(
+                    "TELETHON_DOWNLOAD", 
+                    file_obj.file_size, 
+                    f"فایل بزرگتر از {Config.TELEGRAM_UPLOAD_LIMIT_BYTES} بایت - استفاده از Telethon"
+                )
+                
+                # Use Telethon for large files
+                await status_msg.edit_text("📁 فایل بزرگ است، در حال پردازش با Telethon...")
+                
+                logger.log_file_download_start(file_obj.file_id, file_obj.file_size, "TELETHON_DOWNLOAD")
+                
+                try:
+                    # Initialize Telethon client
+                    telethon_client = await self._init_telethon_client()
+                    
+                    # Download using Telethon (no size limit)
+                    temp_path = os.path.join(Config.TEMP_DIR, f"{user_id}_{file_obj.file_name}")
+                    logger.debug("شروع دانلود با Telethon", file_id=file_obj.file_id)
+                    
+                    # Download the file using Telethon
+                    downloaded_file = await telethon_client.download_media(
+                        update.message, 
+                        file=temp_path
+                    )
+                    
+                    if not downloaded_file or not os.path.exists(temp_path):
+                        raise Exception("دانلود با Telethon ناموفق بود")
+                    
+                    actual_size = os.path.getsize(temp_path)
+                    logger.log_file_download_success(temp_path, actual_size)
+                    
+                    logger.info("تأیید دانلود فایل با Telethon", 
+                               expected_size=file_obj.file_size, 
+                               actual_size=actual_size)
+                    
+                except Exception as download_error:
+                    logger.log_file_download_error(download_error, file_obj.file_id)
+                    raise download_error
+                
+                # Extract metadata for large files
+                logger.log_audio_processing_start(temp_path)
+                try:
+                    metadata = self.audio_processor.get_metadata(temp_path)
+                    logger.log_audio_processing_success(temp_path, metadata)
+                except Exception as metadata_error:
+                    logger.error("خطا در استخراج metadata", error=str(metadata_error))
+                    metadata = {}
+                
+                # Store session data for large files
+                self.user_sessions[user_id] = {
+                    'file_path': temp_path,
+                    'original_filename': file_obj.file_name,
+                    'file_size': file_obj.file_size,
+                    'format': file_extension,
+                    'metadata': metadata,
+                    'cover_data': None,
+                    'operations': []
+                }
+                
+                await status_msg.edit_text("✅ فایل بزرگ با موفقیت دریافت شد! لطفاً گزینه مورد نظر را انتخاب کنید.")
+                await self.show_main_menu(update, context)
+                return
+            
+            # Regular download for smaller files
+            logger.log_delivery_method(
+                "DIRECT_DOWNLOAD", 
+                file_obj.file_size, 
+                f"فایل کوچکتر از {Config.TELEGRAM_UPLOAD_LIMIT_BYTES} بایت"
+            )
+            
+            logger.log_file_download_start(file_obj.file_id, file_obj.file_size, "DIRECT_DOWNLOAD")
+            
             file = await context.bot.get_file(file_obj.file_id)
             temp_path = os.path.join(Config.TEMP_DIR, f"{user_id}_{file_obj.file_name}")
-            await file.download_to_drive(temp_path)
+            
+            try:
+                await file.download_to_drive(temp_path)
+                actual_size = os.path.getsize(temp_path)
+                logger.log_file_download_success(temp_path, actual_size)
+            except Exception as download_error:
+                logger.log_file_download_error(download_error, file_obj.file_id)
+                raise download_error
             
             # Extract metadata
-            metadata = self.audio_processor.get_metadata(temp_path)
+            logger.log_audio_processing_start(temp_path)
+            try:
+                metadata = self.audio_processor.get_metadata(temp_path)
+                logger.log_audio_processing_success(temp_path, metadata)
+            except Exception as metadata_error:
+                logger.error("خطا در استخراج metadata", error=str(metadata_error))
+                metadata = {}
             
             # Store session data
             self.user_sessions[user_id] = {
@@ -123,6 +248,9 @@ MP3, FLAC, WAV, M4A, OGG, AAC
             }
             
             processing_time = time.time() - start_time
+            logger.info("پردازش فایل کامل شد", 
+                       user_id=user_id, 
+                       processing_time=round(processing_time, 2))
             
             # Log file processing
             await self.admin_panel.log_file_processing(
@@ -138,12 +266,17 @@ MP3, FLAC, WAV, M4A, OGG, AAC
             await self.show_main_menu(update, context)
             
         except Exception as e:
+            logger.error("خطا در پردازش فایل", 
+                        user_id=user_id, 
+                        error=str(e), 
+                        error_type=type(e).__name__)
             await status_msg.edit_text(f"❌ خطا در پردازش فایل: {str(e)}")
             # Clean up
             if user_id in self.user_sessions:
                 temp_path = self.user_sessions[user_id].get('file_path')
                 if temp_path and os.path.exists(temp_path):
                     os.remove(temp_path)
+                    logger.debug("فایل موقت پاک شد", temp_path=temp_path)
                 del self.user_sessions[user_id]
     
     async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -533,23 +666,22 @@ MP3, FLAC, WAV, M4A, OGG, AAC
                 cover_data = self.audio_processor.extract_cover_art(session['file_path'])
             
             # Send file with cover as thumbnail if available
-            with open(session['file_path'], 'rb') as audio_file:
-                # Prepare thumbnail safely (Telegram limit: <= 200KB, <= 320x320)
-                thumbnail_file = None
-                if cover_data:
-                    prepared = self.audio_processor.prepare_thumbnail(cover_data)
-                    if prepared:
-                        thumbnail_file = InputFile(io.BytesIO(prepared), filename='thumb.jpg')
+            # Prepare thumbnail safely (Telegram limit: <= 200KB, <= 320x320)
+            thumbnail_file = None
+            if cover_data:
+                prepared = self.audio_processor.prepare_thumbnail(cover_data)
+                if prepared:
+                    thumbnail_file = InputFile(io.BytesIO(prepared), filename='thumb.jpg')
 
-                # Send with retry
-                await self._send_audio_with_retry(
-                    context,
-                    chat_id=update.effective_chat.id,
-                    audio_fp=audio_file,
-                    filename=final_filename,
-                    caption="✅ فایل ویرایش شده آماده است!",
-                    thumbnail=thumbnail_file
-                )
+            # ارسال خودکار بر اساس اندازه فایل
+            await self._deliver_file_auto(
+                context,
+                chat_id=update.effective_chat.id,
+                file_path=session['file_path'],
+                filename=final_filename,
+                caption="✅ فایل ویرایش شده آماده است!",
+                thumbnail=thumbnail_file
+            )
             
             await status_msg.edit_text("✅ فایل با موفقیت ارسال شد!")
             
@@ -592,26 +724,25 @@ MP3, FLAC, WAV, M4A, OGG, AAC
             await context.bot.send_message(chat_id=update.effective_chat.id, text="درخواستی برای ارسال مجدد یافت نشد.")
             return
         try:
-            with open(data['file_path'], 'rb') as audio_file:
-                # Try to prepare thumbnail again if available in file metadata
-                session = self.user_sessions[update.effective_user.id]
-                cover_data = None
-                if session['metadata'].get('has_cover', False):
-                    cover_data = self.audio_processor.extract_cover_art(session['file_path'])
-                thumbnail_file = None
-                if cover_data:
-                    prepared = self.audio_processor.prepare_thumbnail(cover_data)
-                    if prepared:
-                        thumbnail_file = InputFile(io.BytesIO(prepared), filename='thumb.jpg')
+            # Try to prepare thumbnail again if available in file metadata
+            session = self.user_sessions.get(update.effective_user.id)
+            cover_data = None
+            if session and session['metadata'].get('has_cover', False):
+                cover_data = self.audio_processor.extract_cover_art(session['file_path'])
+            thumbnail_file = None
+            if cover_data:
+                prepared = self.audio_processor.prepare_thumbnail(cover_data)
+                if prepared:
+                    thumbnail_file = InputFile(io.BytesIO(prepared), filename='thumb.jpg')
 
-                await self._send_audio_with_retry(
-                    context,
-                    chat_id=update.effective_chat.id,
-                    audio_fp=audio_file,
-                    filename=data['filename'],
-                    caption=data['caption'],
-                    thumbnail=thumbnail_file
-                )
+            await self._deliver_file_auto(
+                context,
+                chat_id=update.effective_chat.id,
+                file_path=data['file_path'],
+                filename=data['filename'],
+                caption=data['caption'],
+                thumbnail=thumbnail_file
+            )
             # Clear pending after success
             context.user_data.pop('pending_send', None)
             await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ ارسال موفق بود.")
@@ -861,6 +992,66 @@ MP3, FLAC, WAV, M4A, OGG, AAC
             except TelegramError as e:
                 # Non-timeout telegram errors shouldn't be retried blindly
                 raise e
+
+    async def _send_large_file_in_parts(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, file_path: str, base_filename: str, part_size_bytes: int):
+        """Split a large file into parts and send as documents under Telegram limits."""
+        size = os.path.getsize(file_path)
+        total_parts = max(1, (size + part_size_bytes - 1) // part_size_bytes)
+        sent = 0
+        with open(file_path, 'rb') as f:
+            for idx in range(1, total_parts + 1):
+                chunk = f.read(part_size_bytes)
+                if not chunk:
+                    break
+                part_name = f"{base_filename}.part{idx:03d}"
+                bio = io.BytesIO(chunk)
+                bio.seek(0)
+                await context.bot.send_document(
+                    chat_id=chat_id,
+                    document=InputFile(bio, filename=part_name),
+                    caption=f"📦 بخش {idx}/{total_parts} — برای ادغام، همه پارت‌ها را دانلود کنید و سپس ادغام کنید"
+                )
+                sent += 1
+        # ارسال دستورالعمل ادغام
+        instructions = (
+            "👀 راهنمای ادغام:\n"
+            "- ویندوز: در پوشهٔ فایل‌ها، دستور زیر را اجرا کنید:\n"
+            f"  copy /b {base_filename}.part* {base_filename}\n"
+            "- لینوکس/مک: در ترمینال:\n"
+            f"  cat {base_filename}.part* > {base_filename}"
+        )
+        await context.bot.send_message(chat_id=chat_id, text=instructions)
+
+    async def _deliver_file_auto(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, file_path: str, filename: str, caption: str, thumbnail: Optional[InputFile]):
+        """Deliver file via best method: direct send, external upload, or split parts."""
+        size = os.path.getsize(file_path)
+        # 1) اگر زیر محدودیت تلگرام باشد، مستقیم ارسال می‌کنیم
+        if size <= Config.TELEGRAM_UPLOAD_LIMIT_BYTES:
+            with open(file_path, 'rb') as audio_fp:
+                await self._send_audio_with_retry(context, chat_id, audio_fp, filename, caption, thumbnail)
+            return
+
+        # 2) تلاش برای آپلود خارجی و ارسال لینک
+        if Config.ENABLE_EXTERNAL_UPLOAD:
+            url = await upload_file_async(file_path, provider=Config.EXTERNAL_UPLOAD_PROVIDER)
+            if url:
+                # دکمهٔ دانلود
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬇️ دانلود مستقیم", url=url)]])
+                await context.bot.send_message(chat_id=chat_id, text=f"🔗 فایل بزرگ آمادهٔ دانلود است:\n{url}", reply_markup=kb)
+                # پیش‌نمایش ۳۰ ثانیه‌ای (سوپرایز)
+                try:
+                    preview_path = os.path.join(Config.TEMP_DIR, f"preview_{os.path.basename(file_path)}.mp3")
+                    if self.audio_processor.generate_preview(file_path, preview_path, duration_sec=30, bitrate=128):
+                        with open(preview_path, 'rb') as pfp:
+                            await self._send_audio_with_retry(context, chat_id, pfp, f"پیش‌نمایش - {filename}", "🎧 پیش‌نمایش ۳۰ ثانیه‌ای", None)
+                    if os.path.exists(preview_path):
+                        os.remove(preview_path)
+                except Exception:
+                    pass
+                return
+
+        # 3) اگر آپلود خارجی برقرار نشد، به‌صورت پارت‌های زیر 46MB ارسال می‌کنیم
+        await self._send_large_file_in_parts(context, chat_id, file_path, filename, Config.LARGE_FILE_PART_SIZE_BYTES)
 
 if __name__ == "__main__":
     bot = MusicBot()

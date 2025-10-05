@@ -112,18 +112,35 @@ class AdminPanel:
         limits = self.default_limits.copy()
         
         try:
+            # Import Config here to ensure we can compare against env-based limits
+            from config import Config
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT key, value FROM settings WHERE key LIKE 'limit_%'")
                 
                 for key, value in cursor.fetchall():
                     setting_name = key.replace('limit_', '')
-                    if setting_name in ['max_file_size', 'daily_file_limit', 'max_batch_size']:
+                    if setting_name == 'max_file_size':
+                        v = int(value)
+                        # Normalize unit: if the stored value looks like MB (very small), convert to bytes
+                        # This handles legacy records where max_file_size was saved in MB.
+                        if v < 10 * 1024 * 1024:
+                            v = v * 1024 * 1024
+                        # Ensure the effective limit is not below the environment-configured max
+                        limits['max_file_size'] = max(v, Config.MAX_FILE_SIZE_BYTES)
+                    elif setting_name in ['daily_file_limit', 'max_batch_size']:
                         limits[setting_name] = int(value)
                     elif setting_name == 'banned_users':
                         limits['banned_users'] = set(json.loads(value))
         except Exception as e:
             print(f"Error loading limits: {e}")
+        
+        # Final safety clamp to ensure runtime respects env-configured limit
+        try:
+            from config import Config
+            limits['max_file_size'] = max(limits['max_file_size'], Config.MAX_FILE_SIZE_BYTES)
+        except Exception:
+            pass
         
         return limits
     

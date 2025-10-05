@@ -434,7 +434,7 @@ class AudioProcessor:
         except Exception as e:
             print(f"Error converting format: {e}")
             return False
-    
+
     def generate_filename(self, metadata: Dict[str, str], template: str = "{artist} - {title}") -> str:
         """Generate filename based on metadata and template"""
         try:
@@ -456,3 +456,23 @@ class AudioProcessor:
         except Exception as e:
             print(f"Error generating filename: {e}")
             return "output"
+
+    def generate_preview(self, input_path: str, output_path: str, duration_sec: int = 30, bitrate: Optional[int] = 128) -> bool:
+        """Generate a short preview clip from the beginning of the audio.
+
+        Requires pydub. Returns True on success, False otherwise.
+        """
+        if not PYDUB_AVAILABLE:
+            print("❌ پیش‌نمایش در دسترس نیست - pydub نصب نشده است")
+            return False
+        try:
+            audio = AudioSegment.from_file(input_path)
+            clip = audio[: max(1000, duration_sec * 1000)]
+            export_params = {"format": "mp3"}
+            if bitrate:
+                export_params["bitrate"] = f"{bitrate}k"
+            clip.export(output_path, **export_params)
+            return True
+        except Exception as e:
+            print(f"Error generating preview: {e}")
+            return False
