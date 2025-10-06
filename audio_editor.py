@@ -87,7 +87,13 @@ class AudioEditor:
             tags['year'] = str(audio_file.tags.get('TDRC', [''])[0])
             tags['track'] = str(audio_file.tags.get('TRCK', [''])[0])
             tags['albumartist'] = str(audio_file.tags.get('TPE2', [''])[0])
-            tags['has_cover'] = bool(audio_file.tags.get('APIC:'))
+            # Check for any APIC frame (cover art)
+            has_apic = False
+            for key in audio_file.tags.keys():
+                if key.startswith('APIC'):
+                    has_apic = True
+                    break
+            tags['has_cover'] = has_apic
         
         return tags
     

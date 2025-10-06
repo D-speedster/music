@@ -57,6 +57,10 @@ class MusicBot:
         async def document_handler(event):
             await self.handle_document(event)
         
+        @self.client.on(events.NewMessage(func=lambda e: e.photo))
+        async def photo_handler(event):
+            await self.handle_photo(event)
+        
         @self.client.on(events.CallbackQuery)
         async def callback_handler(event):
             await self.handle_callback(event)
@@ -274,7 +278,7 @@ class MusicBot:
         elif data == "cancel":
             await self.handle_cancel_callback(event)
         elif data == "back_main":
-            await self.show_main_menu(event, event.message)
+            await self.show_main_menu(event, event.query.message)
         elif data.startswith("edit_"):
             await self.start_metadata_edit(event, data)
         elif data.startswith("cover_"):
@@ -395,6 +399,7 @@ class MusicBot:
         
         if action == "cover_add" or action == "cover_replace":
             session['editing_state'] = 'waiting_cover'
+            session['cover_action'] = action
             text = "🖼️ لطفاً تصویر کاور جدید را ارسال کنید."
             buttons = [[Button.inline("❌ لغو", b"edit_cover")]]
             await event.edit(text, buttons=buttons)
@@ -576,6 +581,56 @@ class MusicBot:
             del self.user_sessions[user_id]
         
         await event.edit("✅ عملیات لغو شد.")
+    
+    async def handle_photo(self, event):
+        """پردازش تصاویر کاور"""
+        user_id = event.sender_id
+        
+        # Check if user has an active session
+        if user_id not in self.user_sessions:
+            await event.respond("❌ لطفاً ابتدا فایل صوتی ارسال کنید.")
+            return
+        
+        session = self.user_sessions[user_id]
+        
+        # Check if user is waiting for cover
+        if session.get('editing_state') != 'waiting_cover':
+            await event.respond("❌ شما در حال انتظار برای کاور نیستید. لطفاً از منو گزینه ویرایش کاور را انتخاب کنید.")
+            return
+        
+        try:
+            # Send processing message
+            processing_msg = await event.respond("⏳ در حال پردازش کاور...")
+            
+            # Download photo
+            temp_cover_path = os.path.join(self.config.TEMP_DIR, f"temp_cover_{user_id}.jpg")
+            await self.client.download_media(event.photo, temp_cover_path)
+            
+            # Get the action from session
+            action = session.get('cover_action', 'add')
+            temp_file = session['temp_file']
+            
+            if action in ['add', 'replace']:
+                # Add/replace cover
+                success = self.audio_editor.add_cover_art(temp_file, temp_cover_path)
+                
+                if success:
+                    # Update metadata
+                    session['metadata'] = self.audio_editor.get_metadata(temp_file)
+                    session['editing_state'] = 'main_menu'
+                    
+                    await processing_msg.edit("✅ کاور با موفقیت اضافه شد!")
+                    await self.show_main_menu(event)
+                else:
+                    await processing_msg.edit("❌ خطا در افزودن کاور. لطفاً دوباره تلاش کنید.")
+            
+            # Clean up temp cover file
+            if os.path.exists(temp_cover_path):
+                os.remove(temp_cover_path)
+                
+        except Exception as e:
+            logger.error(f"Error processing cover: {e}")
+            await event.respond("❌ خطا در پردازش کاور. لطفاً دوباره تلاش کنید.")
     
     async def start(self):
         """شروع ربات"""
